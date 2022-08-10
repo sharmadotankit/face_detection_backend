@@ -1,33 +1,27 @@
 import express from 'express';
 import bcrypt from 'bcrypt';
 import cors from 'cors';
+import bodyParser from 'body-parser';
+import knex from 'knex';
+
+const db = knex({
+	client:'pg',
+	connection:{
+		host:'127.0.0.1',
+		user:'postgres',
+		password:'postgres',
+		database:'smart-brain'
+	}
+})
+
 
 const app = express();
 const saltRounds = 10;
 
+app.use(bodyParser.json());
 app.use(cors());
 app.use(express.json());
 
-const database = {
-	users:[
-	{
-		id:100,
-		name:"Ankit",
-		email:"ankit@gmail.com",
-		password:"ankit@123",
-		entries:0,
-		joined:new Date(),
-	},
-	{
-		id:101,
-		name:"Akhilesh",
-		email:"akhilesh@gmail.com",
-		password:"akhilesh@123",
-		entries:0,
-		joined:new Date(),
-	}
-	]
-}
 
 
 
@@ -37,86 +31,94 @@ app.get('/',(req,res)=>{
 
 
 app.post('/signin',(req,res)=>{
-	// console.log(req.body);
-	//BRCRYPT PART 
-// 	bcrypt.compare(req.body.password, '$2b$10$cGoOt5OOmZvtRhqWS0RTUuOHBK7N3uPYBgmwJoXzzEcLzuN6nfcni', function(err, result) {
-//     console.log("matching",result)
-// });
-// bcrypt.compare('angry', '$2b$10$cGoOt5OOmZvtRhqWS0RTUuOHBK7N3uPYBgmwJoXzzEcLzuN6nfcni', function(err, result) {
-//     console.log("false",result)
-// });
+	const {email,password} = req.body;
+	console.log(email+" "+password);
 
-if(req.body.email=== database.users[0].email && req.body.password ===database.users[0].password){
-	return res.json(database.users[0]);
-}
-return res.status(400).json(null)
-})
+	db.select('email','hash')
+	.from('login')
+	.where('email','=', email)
+	.then(data=> 
+		{
+			const isValid = bcrypt.compareSync(password, data[0].hash);
+			// console.log(data[0].hash);
+			if(isValid){
+				console.log(isValid)
+				return db.select('*')
+				.from('users')
+				.where('email','=',email)
+				.then(user=>{
+					console.log(user[0]);
+					res.json(user[0]);
+				})
+				.catch(err => res.status(400).json('unable to get user'));
+			}
+			else{
+				res.status(400).json('Wrong credentials');
+			}
+		}).catch(err => res.status(400).json('Wrong credentials'));
+});
 
 
 app.post('/register',(req,res)=>{
 	const {name,email,password}=req.body;
 
-	// bcrypt.hash(password, saltRounds, function(err, hash) {
-	// 	console.log(hash);
-	//     database.users.push({
-	// 		id:102,
-	// 		name:name,
-	// 		password:hash,
-	// 		email:email,
-	// 		entries:0,
-	// 		joined: new Date()
-	// 	})
-	// 	res.send(database.users[database.users.length-1]);
-	// });	
+	const passwordHash = bcrypt.hashSync(password, saltRounds, function(err, hash) {
+		return hash;
+	});
 
-
-	try{
-		database.users.push({
-			id:102,
-			name:name,
-			password:password,
-			email:email,
-			entries:0,
-			joined: new Date()
+	db.transaction(trx=>{
+		trx.insert({
+			hash:passwordHash,
+			email:email
 		})
-		return res.send(database.users[database.users.length-1]);
-	}
-	catch{
-		return res.status(503).send({Error:"Could not register user!"});
-	}
+		.into('login')
+		.returning('email')
+		.then(loginEmail =>{
+			return  trx('users')
+					.returning('*')
+					.insert({
+						name:name,
+						email:loginEmail[0].email,
+						joined: new Date()
+					})
+					.then(user=>{
+						res.json(user[0]);
+					})
+					.then(trx.commit)
+					.catch(trx.rollback)
+		}).catch(err=> res.status(400).json('Unable to register'));
+	}).catch(err=> res.status(400).json('Unable to register'));
+
+
 	
 })
 
 
 app.get('/profile/:id',(req,res)=>{
 	let {id} = req.params;
-	id=Number(id);
-	// console.log(typeof id);
-	database.users.map(user=>{
-		if(user.id===id){
-			return res.json(user);
+
+	db.select('*').from('users').where({id})
+	.then(user=> {
+		if(user.length){
+			res.status(200).json(user[0])
 		}
-	})
-	res.status(404).send("no such user");
+		else{
+			res.status(404).json("User not found")
+		}}
+		)	
 })
 
 
 app.put('/image',(req,res)=>{
 	let {id} = req.body;
-	id=Number(id);
-	console.log(id);
-	let found = false;
-	database.users.map(user=>{
-		if(user.id===id){
-			found=true;
-			user.entries++;
-			return res.json(user.entries);
-		}
-	})
 
-	if(!found){
-		return res.json(null);
-	}
+	db('users').where('id','=',id)
+	.increment('entries',1)
+	.returning('entries')
+	.then(entries =>{
+		res.json(entries[0].entries);
+	}).catch(err => res.status(400).json('Unable to get the entries'))
+
 })
 
 
